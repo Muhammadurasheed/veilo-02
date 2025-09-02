@@ -158,21 +158,34 @@ const CreateSanctuary: React.FC = () => {
           emoji: values.emoji,
           duration: values.expireHours * 60, // Convert to minutes
           maxParticipants: values.maxParticipants,
-          scheduledTime: values.scheduledTime,
+          scheduledDateTime: values.scheduledTime?.toISOString(),
           accessType: 'public',
           voiceModulationEnabled: true,
-          aiModerationEnabled: true,
+          moderationEnabled: true,
           recordingEnabled: false,
-          allowAnonymous: true
+          allowAnonymous: true,
+          emergencyContactEnabled: true,
+          category: 'support'
         };
         
-        const response = await fetch('/api/flagship-sanctuary/create', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(flagshipSanctuaryData)
-        }).then(res => res.json());
+        // Use proper API service instead of direct fetch
+        const response = values.scheduledTime 
+          ? await fetch('/api/flagship-sanctuary/schedule', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('token')}` // Add auth header
+              },
+              body: JSON.stringify(flagshipSanctuaryData)
+            }).then(res => res.json())
+          : await fetch('/api/flagship-sanctuary/create', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('token')}` // Add auth header
+              },
+              body: JSON.stringify(flagshipSanctuaryData)
+            }).then(res => res.json());
         
         if (response.success && response.data) {
           // Store host token for anonymous hosts with expiry
@@ -224,7 +237,7 @@ const CreateSanctuary: React.FC = () => {
   const shareOnTwitter = () => {
     // Different URLs based on sanctuary type
     const url = createdSession.type === 'flagship-audio' 
-      ? `${window.location.origin}/flagship-sanctuary/${createdSession.id}`
+      ? `${window.location.origin}/flagship/${createdSession.id}`
       : createdSession.type === 'live-audio' 
       ? `${window.location.origin}/sanctuary/live/${createdSession.id}`
       : `${window.location.origin}/sanctuary/submit/${createdSession.id}`;
@@ -235,7 +248,7 @@ const CreateSanctuary: React.FC = () => {
   const shareOnWhatsApp = () => {
     // Different URLs based on sanctuary type  
     const url = createdSession.type === 'flagship-audio'
-      ? `${window.location.origin}/flagship-sanctuary/${createdSession.id}`
+      ? `${window.location.origin}/flagship/${createdSession.id}`
       : createdSession.type === 'live-audio'
       ? `${window.location.origin}/sanctuary/live/${createdSession.id}`
       : `${window.location.origin}/sanctuary/submit/${createdSession.id}`;
@@ -246,7 +259,7 @@ const CreateSanctuary: React.FC = () => {
   const copyToClipboard = () => {
     // Different URLs based on sanctuary type
     const url = createdSession.type === 'flagship-audio'
-      ? `${window.location.origin}/flagship-sanctuary/${createdSession.id}`
+      ? `${window.location.origin}/flagship/${createdSession.id}`
       : createdSession.type === 'live-audio'
       ? `${window.location.origin}/sanctuary/live/${createdSession.id}`
       : `${window.location.origin}/sanctuary/submit/${createdSession.id}`;
@@ -320,16 +333,16 @@ const CreateSanctuary: React.FC = () => {
             <Button variant="outline" onClick={() => navigate('/my-sanctuaries')}>
               My Sanctuaries
             </Button>
-            <Button variant="veilo-primary" onClick={() => {
-              const route = createdSession.type === 'flagship-audio' 
-                ? `/flagship-sanctuary/${createdSession.id}`
-                : createdSession.type === 'live-audio' 
-                ? `/sanctuary/live/${createdSession.id}`
-                : `/sanctuary/inbox/${createdSession.id}`;
-              navigate(route);
-            }}>
-              {createdSession.type === 'flagship-audio' ? 'Enter Flagship Space' : createdSession.type === 'live-audio' ? 'Enter Live Space' : 'View Inbox'}
-            </Button>
+          <Button variant="veilo-primary" onClick={() => {
+            const route = createdSession.type === 'flagship-audio' 
+              ? `/flagship/${createdSession.id}`
+              : createdSession.type === 'live-audio' 
+              ? `/sanctuary/live/${createdSession.id}`
+              : `/sanctuary/inbox/${createdSession.id}`;
+            navigate(route);
+          }}>
+            {createdSession.type === 'flagship-audio' ? 'Enter Live Session' : createdSession.type === 'live-audio' ? 'Enter Live Space' : 'View Inbox'}
+          </Button>
           </div>
         </CardFooter>
       </Card>

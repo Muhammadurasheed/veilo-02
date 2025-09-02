@@ -11,6 +11,213 @@ const aiModerationService = require('../services/aiModerationService');
 
 // 🎯 FLAGSHIP ROUTES - Anonymous Live Audio Sanctuary
 
+// ================== IMMEDIATE LIVE SESSIONS ==================
+
+// Create immediate live session
+router.post('/create', authMiddleware, async (req, res) => {
+  try {
+    const {
+      topic,
+      description,
+      emoji,
+      maxParticipants = 50,
+      allowAnonymous = true,
+      moderationEnabled = true,
+      recordingEnabled = false,
+      voiceModulationEnabled = true,
+      emergencyContactEnabled = true,
+      duration = 120, // 2 hours default
+      tags = [],
+      category = 'support'
+    } = req.body;
+
+    console.log('🎯 Creating immediate live session:', { 
+      topic, 
+      hostId: req.user.id,
+      voiceModulationEnabled
+    });
+
+    // Validate required fields
+    if (!topic?.trim()) {
+      return res.error('Topic is required', 400);
+    }
+
+    // Generate unique identifiers
+    const sessionId = `live-${nanoid(8)}`;
+    const channelName = `sanctuary_${sessionId}`;
+    const sessionDurationSeconds = duration * 60;
+
+    // Generate Agora tokens
+    let agoraToken, hostToken;
+    try {
+      agoraToken = generateRtcToken(channelName, 0, 'subscriber', sessionDurationSeconds);
+      hostToken = generateRtcToken(channelName, req.user.id, 'publisher', sessionDurationSeconds);
+    } catch (agoraError) {
+      console.warn('⚠️ Agora token generation failed:', agoraError.message);
+      agoraToken = `temp_token_${nanoid(16)}`;
+      hostToken = `temp_host_token_${nanoid(16)}`;
+    }
+
+    // Create live session
+    const liveSession = new LiveSanctuarySession({
+      id: sessionId,
+      topic: topic.trim(),
+      description: description?.trim(),
+      emoji: emoji || '🎙️',
+      hostId: req.user.id,
+      hostAlias: req.user.alias || `Host_${nanoid(4)}`,
+      hostToken,
+      agoraChannelName: channelName,
+      agoraToken,
+      maxParticipants,
+      allowAnonymous,
+      moderationEnabled,
+      emergencyContactEnabled,
+      recordingEnabled,
+      isActive: true,
+      expiresAt: new Date(Date.now() + (sessionDurationSeconds * 1000)),
+      participants: [{
+        id: req.user.id,
+        alias: req.user.alias || `Host_${nanoid(4)}`,
+        isHost: true,
+        isModerator: true,
+        joinedAt: new Date(),
+        avatarIndex: req.user.avatarIndex || 1,
+        connectionStatus: 'connected',
+        voiceModulation: voiceModulationEnabled ? {
+          enabled: true,
+          voiceId: null, // Will be set when host selects voice
+          settings: {}
+        } : null
+      }],
+      currentParticipants: 1,
+      status: 'active',
+      startTime: new Date(),
+      tags,
+      category
+    });
+
+    await liveSession.save();
+
+    // Cache session data in Redis for real-time access
+    await redisService.setSessionState(sessionId, {
+      type: 'live',
+      topic: liveSession.topic,
+      hostId: liveSession.hostId,
+      participants: liveSession.participants,
+      status: 'active',
+      voiceModulationEnabled,
+      maxParticipants
+    }, sessionDurationSeconds);
+
+    console.log('✅ Live session created successfully:', {
+      sessionId,
+      channelName,
+      voiceModulationEnabled
+    });
+
+    // Get available voices if voice modulation is enabled
+    let availableVoices = [];
+    if (voiceModulationEnabled) {
+      try {
+        availableVoices = elevenLabsService.getAvailableVoices();
+      } catch (voiceError) {
+        console.warn('⚠️ Failed to get available voices:', voiceError.message);
+      }
+    }
+
+    res.success({
+      session: {
+        id: liveSession.id,
+        topic: liveSession.topic,
+        description: liveSession.description,
+        emoji: liveSession.emoji,
+        hostAlias: liveSession.hostAlias,
+        agoraChannelName: liveSession.agoraChannelName,
+        agoraToken: liveSession.agoraToken,
+        hostToken: liveSession.hostToken,
+        maxParticipants: liveSession.maxParticipants,
+        currentParticipants: liveSession.currentParticipants,
+        allowAnonymous: liveSession.allowAnonymous,
+        moderationEnabled: liveSession.moderationEnabled,
+        voiceModulationEnabled,
+        emergencyContactEnabled: liveSession.emergencyContactEnabled,
+        recordingEnabled: liveSession.recordingEnabled,
+        status: liveSession.status,
+        expiresAt: liveSession.expiresAt,
+        participants: liveSession.participants,
+        availableVoices
+      }
+    }, 'Live session created successfully');
+
+  } catch (error) {
+    console.error('❌ Live session creation error:', error);
+    res.error('Failed to create live session: ' + error.message, 500);
+  }
+});
+
+// Get live session details
+router.get('/:sessionId', optionalAuthMiddleware, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    console.log('🔍 Getting session details:', sessionId);
+    
+    // Try to get from cache first
+    const cachedSession = await redisService.getSessionState(sessionId);
+    
+    let session = await LiveSanctuarySession.findOne({ id: sessionId });
+    
+    if (!session) {
+      return res.error('Session not found', 404);
+    }
+
+    // Check if session is still active
+    if (new Date() > session.expiresAt) {
+      session.status = 'ended';
+      session.isActive = false;
+      await session.save();
+      return res.error('Session has expired', 410);
+    }
+
+    // Get available voices
+    let availableVoices = [];
+    try {
+      availableVoices = elevenLabsService.getAvailableVoices();
+    } catch (voiceError) {
+      console.warn('⚠️ Failed to get available voices:', voiceError.message);
+    }
+
+    res.success({
+      session: {
+        id: session.id,
+        topic: session.topic,
+        description: session.description,
+        emoji: session.emoji,
+        hostAlias: session.hostAlias,
+        agoraChannelName: session.agoraChannelName,
+        agoraToken: session.agoraToken,
+        maxParticipants: session.maxParticipants,
+        currentParticipants: session.currentParticipants,
+        allowAnonymous: session.allowAnonymous,
+        moderationEnabled: session.moderationEnabled,
+        emergencyContactEnabled: session.emergencyContactEnabled,
+        recordingEnabled: session.recordingEnabled,
+        status: session.status,
+        isActive: session.isActive,
+        expiresAt: session.expiresAt,
+        participants: session.participants,
+        availableVoices,
+        cachedData: cachedSession
+      }
+    }, 'Session details retrieved');
+
+  } catch (error) {
+    console.error('❌ Session details error:', error);
+    res.error('Failed to get session details: ' + error.message, 500);
+  }
+});
+
 // ================== SCHEDULING SYSTEM ==================
 
 // Create scheduled session

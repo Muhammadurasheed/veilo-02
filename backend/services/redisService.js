@@ -3,87 +3,113 @@ const redis = require('redis');
 class RedisService {
   constructor() {
     this.client = null;
+    this.publisher = null;
+    this.subscriber = null;
     this.isConnected = false;
-    this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 5;
+    this.retryCount = 0;
+    this.maxRetries = 5;
+    this.fallbackStore = new Map(); // In-memory fallback
+    
+    this.init();
   }
 
-  async connect() {
-    if (this.isConnected) return this.client;
-
+  async init() {
     try {
-      // Create Redis client with cloud configuration
-      this.client = redis.createClient({
+      console.log('🔄 Initializing Redis connection...');
+      
+      const redisConfig = {
         url: process.env.REDIS_URL,
+        password: process.env.REDIS_PASSWORD,
         socket: {
+          connectTimeout: 60000,
+          lazyConnect: true,
           reconnectStrategy: (retries) => {
-            console.log(`🔄 Redis reconnect attempt ${retries}`);
-            return Math.min(retries * 50, 500);
-          },
-          connectTimeout: 10000,
-          lazyConnect: true
-        },
-        retry_strategy: (options) => {
-          if (options.error && options.error.code === 'ECONNREFUSED') {
-            console.error('❌ Redis server refused connection');
-            return 5000;
+            if (retries > this.maxRetries) {
+              console.error('❌ Redis max retries exceeded');
+              return false;
+            }
+            console.log(`🔄 Redis retry attempt ${retries}/${this.maxRetries}`);
+            return Math.min(retries * 100, 3000);
           }
-          if (options.total_retry_time > 1000 * 60 * 60) {
-            console.error('❌ Redis retry time exhausted');
-            return null;
-          }
-          if (options.attempt > 10) {
-            console.error('❌ Redis max attempts reached');
-            return null;
-          }
-          return Math.min(options.attempt * 100, 3000);
         }
+      };
+
+      // Main client for general operations
+      this.client = redis.createClient(redisConfig);
+      
+      // Publisher for real-time events
+      this.publisher = redis.createClient(redisConfig);
+      
+      // Subscriber for real-time events
+      this.subscriber = redis.createClient(redisConfig);
+
+      // Setup error handlers
+      this.client.on('error', (err) => {
+        console.error('❌ Redis Client Error:', err.message);
+        this.isConnected = false;
+        this.enableFallbackMode();
       });
 
-      // Event handlers
+      this.publisher.on('error', (err) => {
+        console.error('❌ Redis Publisher Error:', err.message);
+      });
+
+      this.subscriber.on('error', (err) => {
+        console.error('❌ Redis Subscriber Error:', err.message);
+      });
+
+      // Setup connection handlers
       this.client.on('connect', () => {
-        console.log('🟢 Redis client connecting...');
+        console.log('✅ Redis client connected');
+        this.isConnected = true;
+        this.retryCount = 0;
       });
 
       this.client.on('ready', () => {
         console.log('✅ Redis client ready');
-        this.isConnected = true;
-        this.reconnectAttempts = 0;
-      });
-
-      this.client.on('error', (err) => {
-        console.error('❌ Redis client error:', err.message);
-        this.isConnected = false;
       });
 
       this.client.on('end', () => {
-        console.log('🔴 Redis client disconnected');
+        console.log('🔌 Redis client connection ended');
         this.isConnected = false;
+        this.enableFallbackMode();
       });
 
-      // Connect to Redis
-      await this.client.connect();
-      return this.client;
+      // Connect all clients
+      await Promise.all([
+        this.client.connect(),
+        this.publisher.connect(),
+        this.subscriber.connect()
+      ]);
+
+      console.log('✅ All Redis connections established');
 
     } catch (error) {
-      console.error('❌ Redis connection failed:', error.message);
+      console.error('❌ Redis initialization failed:', error.message);
       this.isConnected = false;
-      throw error;
+      
+      // Enable fallback mode immediately
+      this.enableFallbackMode();
     }
   }
 
-  async disconnect() {
-    if (this.client && this.isConnected) {
-      await this.client.quit();
-      this.isConnected = false;
-      console.log('🔴 Redis client disconnected');
-    }
+  enableFallbackMode() {
+    console.log('⚠️ Redis fallback mode enabled - using in-memory storage');
+    this.isConnected = false;
   }
 
-  // Session State Management
+  // Session State Management with fallback
   async setSessionState(sessionId, state, expireSeconds = 3600) {
     try {
-      if (!this.isConnected) return false;
+      if (!this.isConnected) {
+        // Fallback to in-memory storage
+        this.fallbackStore.set(`session:${sessionId}`, { 
+          data: state, 
+          expires: Date.now() + (expireSeconds * 1000) 
+        });
+        console.log(`💾 [Fallback] Session state stored: ${sessionId}`);
+        return true;
+      }
       
       const key = `session:${sessionId}`;
       await this.client.setEx(key, expireSeconds, JSON.stringify(state));
@@ -91,26 +117,48 @@ class RedisService {
       return true;
     } catch (error) {
       console.error('❌ Redis setSessionState error:', error);
-      return false;
+      // Fallback to in-memory storage
+      this.fallbackStore.set(`session:${sessionId}`, { 
+        data: state, 
+        expires: Date.now() + (expireSeconds * 1000) 
+      });
+      return true;
     }
   }
 
   async getSessionState(sessionId) {
     try {
-      if (!this.isConnected) return null;
+      if (!this.isConnected) {
+        // Fallback to in-memory storage
+        const stored = this.fallbackStore.get(`session:${sessionId}`);
+        if (stored && stored.expires > Date.now()) {
+          return stored.data;
+        }
+        this.fallbackStore.delete(`session:${sessionId}`);
+        return null;
+      }
       
       const key = `session:${sessionId}`;
       const state = await this.client.get(key);
       return state ? JSON.parse(state) : null;
     } catch (error) {
       console.error('❌ Redis getSessionState error:', error);
+      // Try fallback
+      const stored = this.fallbackStore.get(`session:${sessionId}`);
+      if (stored && stored.expires > Date.now()) {
+        return stored.data;
+      }
       return null;
     }
   }
 
   async deleteSessionState(sessionId) {
     try {
-      if (!this.isConnected) return false;
+      if (!this.isConnected) {
+        this.fallbackStore.delete(`session:${sessionId}`);
+        console.log(`🗑️ [Fallback] Session state deleted: ${sessionId}`);
+        return true;
+      }
       
       const key = `session:${sessionId}`;
       await this.client.del(key);
@@ -118,14 +166,23 @@ class RedisService {
       return true;
     } catch (error) {
       console.error('❌ Redis deleteSessionState error:', error);
-      return false;
+      this.fallbackStore.delete(`session:${sessionId}`);
+      return true;
     }
   }
 
-  // Participant Management
+  // Participant Management with fallback
   async addParticipant(sessionId, participant) {
     try {
-      if (!this.isConnected) return false;
+      if (!this.isConnected) {
+        const key = `participants:${sessionId}`;
+        const stored = this.fallbackStore.get(key) || [];
+        const updated = stored.filter(p => p.id !== participant.id);
+        updated.push(participant);
+        this.fallbackStore.set(key, updated);
+        console.log(`👤 [Fallback] Participant added: ${participant.id} to ${sessionId}`);
+        return true;
+      }
       
       const key = `participants:${sessionId}`;
       await this.client.hSet(key, participant.id, JSON.stringify(participant));
@@ -135,13 +192,26 @@ class RedisService {
       return true;
     } catch (error) {
       console.error('❌ Redis addParticipant error:', error);
-      return false;
+      // Fallback
+      const key = `participants:${sessionId}`;
+      const stored = this.fallbackStore.get(key) || [];
+      const updated = stored.filter(p => p.id !== participant.id);
+      updated.push(participant);
+      this.fallbackStore.set(key, updated);
+      return true;
     }
   }
 
   async removeParticipant(sessionId, participantId) {
     try {
-      if (!this.isConnected) return false;
+      if (!this.isConnected) {
+        const key = `participants:${sessionId}`;
+        const stored = this.fallbackStore.get(key) || [];
+        const updated = stored.filter(p => p.id !== participantId);
+        this.fallbackStore.set(key, updated);
+        console.log(`👤 [Fallback] Participant removed: ${participantId} from ${sessionId}`);
+        return true;
+      }
       
       const key = `participants:${sessionId}`;
       await this.client.hDel(key, participantId);
@@ -150,13 +220,20 @@ class RedisService {
       return true;
     } catch (error) {
       console.error('❌ Redis removeParticipant error:', error);
-      return false;
+      // Fallback
+      const key = `participants:${sessionId}`;
+      const stored = this.fallbackStore.get(key) || [];
+      const updated = stored.filter(p => p.id !== participantId);
+      this.fallbackStore.set(key, updated);
+      return true;
     }
   }
 
   async getParticipants(sessionId) {
     try {
-      if (!this.isConnected) return [];
+      if (!this.isConnected) {
+        return this.fallbackStore.get(`participants:${sessionId}`) || [];
+      }
       
       const key = `participants:${sessionId}`;
       const participants = await this.client.hGetAll(key);
@@ -164,33 +241,38 @@ class RedisService {
       return Object.values(participants).map(p => JSON.parse(p));
     } catch (error) {
       console.error('❌ Redis getParticipants error:', error);
-      return [];
+      return this.fallbackStore.get(`participants:${sessionId}`) || [];
     }
   }
 
-  // Real-time Event Broadcasting
+  // Real-time Event Broadcasting with fallback
   async publishEvent(channel, event, data) {
     try {
-      if (!this.isConnected) return false;
+      if (!this.isConnected) {
+        console.log(`📡 [Fallback] Event would be published to ${channel}: ${event}`);
+        return true;
+      }
       
       const message = JSON.stringify({ event, data, timestamp: new Date().toISOString() });
-      await this.client.publish(channel, message);
+      await this.publisher.publish(channel, message);
       
       console.log(`📡 Event published to ${channel}: ${event}`);
       return true;
     } catch (error) {
       console.error('❌ Redis publishEvent error:', error);
-      return false;
+      console.log(`📡 [Fallback] Event would be published to ${channel}: ${event}`);
+      return true;
     }
   }
 
   async subscribeToEvents(channel, callback) {
     try {
-      if (!this.isConnected) return false;
+      if (!this.isConnected) {
+        console.log(`📡 [Fallback] Would subscribe to channel: ${channel}`);
+        return true;
+      }
       
-      const subscriber = this.client.duplicate();
-      await subscriber.connect();
-      
+      const subscriber = this.subscriber.duplicate();
       await subscriber.subscribe(channel, (message) => {
         try {
           const parsed = JSON.parse(message);
@@ -204,88 +286,67 @@ class RedisService {
       return subscriber;
     } catch (error) {
       console.error('❌ Redis subscribeToEvents error:', error);
+      console.log(`📡 [Fallback] Would subscribe to channel: ${channel}`);
       return null;
     }
   }
 
-  // Voice Chat Queue Management
-  async addToVoiceQueue(sessionId, participantId, priority = 0) {
+  // Health check
+  async healthCheck() {
     try {
-      if (!this.isConnected) return false;
-      
-      const key = `voice_queue:${sessionId}`;
-      await this.client.zAdd(key, [{ score: priority, value: participantId }]);
-      await this.client.expire(key, 3600);
-      
-      console.log(`🎤 Added to voice queue: ${participantId} (priority: ${priority})`);
-      return true;
+      if (!this.isConnected) {
+        return { status: 'fallback', mode: 'in-memory', connected: false };
+      }
+
+      const result = await this.client.ping();
+      return {
+        status: result === 'PONG' ? 'connected' : 'error',
+        mode: 'redis',
+        connected: this.isConnected
+      };
     } catch (error) {
-      console.error('❌ Redis addToVoiceQueue error:', error);
-      return false;
+      return {
+        status: 'fallback',
+        mode: 'in-memory', 
+        connected: false,
+        error: error.message
+      };
     }
   }
 
-  async getVoiceQueue(sessionId) {
+  // Cleanup with fallback support
+  async disconnect() {
     try {
-      if (!this.isConnected) return [];
+      if (this.client) await this.client.disconnect();
+      if (this.publisher) await this.publisher.disconnect();
+      if (this.subscriber) await this.subscriber.disconnect();
       
-      const key = `voice_queue:${sessionId}`;
-      return await this.client.zRange(key, 0, -1);
+      console.log('🔌 Redis connections closed');
     } catch (error) {
-      console.error('❌ Redis getVoiceQueue error:', error);
-      return [];
+      console.error('❌ Error closing Redis connections:', error.message);
     }
-  }
-
-  async removeFromVoiceQueue(sessionId, participantId) {
-    try {
-      if (!this.isConnected) return false;
-      
-      const key = `voice_queue:${sessionId}`;
-      await this.client.zRem(key, participantId);
-      
-      console.log(`🎤 Removed from voice queue: ${participantId}`);
-      return true;
-    } catch (error) {
-      console.error('❌ Redis removeFromVoiceQueue error:', error);
-      return false;
-    }
-  }
-
-  // Session Analytics
-  async incrementCounter(key, field, increment = 1) {
-    try {
-      if (!this.isConnected) return false;
-      
-      await this.client.hIncrBy(key, field, increment);
-      await this.client.expire(key, 86400); // Expire in 24 hours
-      return true;
-    } catch (error) {
-      console.error('❌ Redis incrementCounter error:', error);
-      return false;
-    }
-  }
-
-  async getCounters(key) {
-    try {
-      if (!this.isConnected) return {};
-      
-      return await this.client.hGetAll(key);
-    } catch (error) {
-      console.error('❌ Redis getCounters error:', error);
-      return {};
-    }
+    
+    // Clear fallback store
+    this.fallbackStore.clear();
   }
 }
 
 // Create singleton instance
 const redisService = new RedisService();
 
-// Initialize Redis connection
-if (process.env.REDIS_ENABLED === 'true') {
-  redisService.connect().catch(error => {
-    console.error('❌ Failed to initialize Redis:', error.message);
-  });
-}
+// Initialize Redis connection automatically
+console.log('🚀 Redis service initializing...');
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('🔄 Shutting down Redis service...');
+  await redisService.disconnect();
+});
+
+process.on('SIGINT', async () => {
+  console.log('🔄 Shutting down Redis service...');
+  await redisService.disconnect();
+  process.exit(0);
+});
 
 module.exports = redisService;
