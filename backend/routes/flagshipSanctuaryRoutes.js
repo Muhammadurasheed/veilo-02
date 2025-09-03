@@ -13,7 +13,7 @@ const aiModerationService = require('../services/aiModerationService');
 
 // ================== IMMEDIATE LIVE SESSIONS ==================
 
-// Create immediate live session
+// Create immediate live session (with enhanced error handling)
 router.post('/create', authMiddleware, async (req, res) => {
   try {
     const {
@@ -126,28 +126,27 @@ router.post('/create', authMiddleware, async (req, res) => {
       }
     }
 
+    // Return proper response structure
     res.success({
-      session: {
-        id: liveSession.id,
-        topic: liveSession.topic,
-        description: liveSession.description,
-        emoji: liveSession.emoji,
-        hostAlias: liveSession.hostAlias,
-        agoraChannelName: liveSession.agoraChannelName,
-        agoraToken: liveSession.agoraToken,
-        hostToken: liveSession.hostToken,
-        maxParticipants: liveSession.maxParticipants,
-        currentParticipants: liveSession.currentParticipants,
-        allowAnonymous: liveSession.allowAnonymous,
-        moderationEnabled: liveSession.moderationEnabled,
-        voiceModulationEnabled,
-        emergencyContactEnabled: liveSession.emergencyContactEnabled,
-        recordingEnabled: liveSession.recordingEnabled,
-        status: liveSession.status,
-        expiresAt: liveSession.expiresAt,
-        participants: liveSession.participants,
-        availableVoices
-      }
+      id: liveSession.id,
+      topic: liveSession.topic,
+      description: liveSession.description,
+      emoji: liveSession.emoji,
+      hostAlias: liveSession.hostAlias,
+      agoraChannelName: liveSession.agoraChannelName,
+      agoraToken: liveSession.agoraToken,
+      hostToken: liveSession.hostToken,
+      maxParticipants: liveSession.maxParticipants,
+      currentParticipants: liveSession.currentParticipants,
+      allowAnonymous: liveSession.allowAnonymous,
+      moderationEnabled: liveSession.moderationEnabled,
+      voiceModulationEnabled,
+      emergencyContactEnabled: liveSession.emergencyContactEnabled,
+      recordingEnabled: liveSession.recordingEnabled,
+      status: liveSession.status,
+      expiresAt: liveSession.expiresAt,
+      participants: liveSession.participants,
+      availableVoices
     }, 'Live session created successfully');
 
   } catch (error) {
@@ -301,20 +300,19 @@ router.post('/schedule', authMiddleware, async (req, res) => {
     });
 
     res.success({
-      session: {
-        id: scheduledSession.id,
-        topic: scheduledSession.topic,
-        description: scheduledSession.description,
-        emoji: scheduledSession.emoji,
-        hostAlias: scheduledSession.hostAlias,
-        scheduledDateTime: scheduledSession.scheduledDateTime,
-        duration: scheduledSession.duration,
-        invitationCode: scheduledSession.invitationCode,
-        invitationLink: scheduledSession.invitationLink,
-        maxParticipants: scheduledSession.maxParticipants,
-        status: scheduledSession.status,
-        accessType: scheduledSession.accessType
-      }
+      id: scheduledSession.id,
+      topic: scheduledSession.topic,
+      description: scheduledSession.description,
+      emoji: scheduledSession.emoji,
+      hostAlias: scheduledSession.hostAlias,
+      scheduledDateTime: scheduledSession.scheduledDateTime,
+      duration: scheduledSession.duration,
+      invitationCode: scheduledSession.invitationCode,
+      invitationLink: scheduledSession.invitationLink,
+      maxParticipants: scheduledSession.maxParticipants,
+      status: scheduledSession.status,
+      accessType: scheduledSession.accessType,
+      hostToken: `scheduled_host_${nanoid(16)}` // Add host token for consistency
     }, 'Scheduled session created successfully');
 
   } catch (error) {

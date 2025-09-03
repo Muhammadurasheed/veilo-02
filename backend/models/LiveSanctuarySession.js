@@ -91,7 +91,12 @@ const liveSanctuarySessionSchema = new mongoose.Schema({
     avatarIndex: { type: Number, default: 1 },
     connectionStatus: { type: String, default: 'connected' },
     audioLevel: { type: Number, default: 0 },
-    speakingTime: { type: Number, default: 0 }
+    speakingTime: { type: Number, default: 0 },
+    voiceModulation: {
+      enabled: { type: Boolean, default: false },
+      voiceId: String,
+      settings: mongoose.Schema.Types.Mixed
+    }
   }],
   hostAlias: {
     type: String
@@ -138,9 +143,23 @@ const liveSanctuarySessionSchema = new mongoose.Schema({
   tags: [{
     type: String
   }],
+  category: {
+    type: String,
+    enum: ['support', 'wellness', 'discussion', 'education', 'social', 'crisis', 'other'],
+    default: 'support'
+  },
   language: {
     type: String,
     default: 'en'
+  },
+  // Voice modulation settings
+  voiceModulationEnabled: {
+    type: Boolean,
+    default: true
+  },
+  recordingEnabled: {
+    type: Boolean,
+    default: false
   }
 });
 

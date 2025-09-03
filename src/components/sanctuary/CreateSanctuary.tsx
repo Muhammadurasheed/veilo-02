@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { SanctuaryApi, LiveSanctuaryApi } from '@/services/api';
+import { FlagshipSanctuaryApi } from '@/services/flagshipSanctuaryApi';
 import { ApiSanctuaryCreateRequest } from '@/types';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -159,58 +160,46 @@ const CreateSanctuary: React.FC = () => {
           duration: values.expireHours * 60, // Convert to minutes
           maxParticipants: values.maxParticipants,
           scheduledDateTime: values.scheduledTime?.toISOString(),
-          accessType: 'public',
+          accessType: 'public' as const,
           voiceModulationEnabled: true,
           moderationEnabled: true,
           recordingEnabled: false,
           allowAnonymous: true,
           emergencyContactEnabled: true,
-          category: 'support'
+          category: 'support' as const
         };
         
-        // Use proper API service instead of direct fetch
+        // Use proper API service with authentication
         const response = values.scheduledTime 
-          ? await fetch('/api/flagship-sanctuary/schedule', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${localStorage.getItem('token')}` // Add auth header
-              },
-              body: JSON.stringify(flagshipSanctuaryData)
-            }).then(res => res.json())
-          : await fetch('/api/flagship-sanctuary/create', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${localStorage.getItem('token')}` // Add auth header
-              },
-              body: JSON.stringify(flagshipSanctuaryData)
-            }).then(res => res.json());
+          ? await FlagshipSanctuaryApi.scheduleSession(flagshipSanctuaryData)
+          : await FlagshipSanctuaryApi.createSession(flagshipSanctuaryData);
         
         if (response.success && response.data) {
+          const sessionData = response.data;
+          
           // Store host token for anonymous hosts with expiry
-          if (response.data.hostToken) {
+          if (sessionData.hostToken) {
             const expiryDate = new Date();
             expiryDate.setHours(expiryDate.getHours() + 48); // 48 hours
             
-            localStorage.setItem(`flagship-sanctuary-host-${response.data.id}`, response.data.hostToken);
-            localStorage.setItem(`flagship-sanctuary-host-${response.data.id}-expires`, expiryDate.toISOString());
+            localStorage.setItem(`flagship-sanctuary-host-${sessionData.id}`, sessionData.hostToken);
+            localStorage.setItem(`flagship-sanctuary-host-${sessionData.id}-expires`, expiryDate.toISOString());
             
             // Add to sanctuary management list
             addSanctuaryToList({
-              id: response.data.id,
-              topic: response.data.topic,
-              description: response.data.description,
-              emoji: response.data.emoji,
-              mode: 'live-audio' as any, // Type assertion for now
-              hostToken: response.data.hostToken,
+              id: sessionData.id,
+              topic: sessionData.topic,
+              description: sessionData.description,
+              emoji: sessionData.emoji,
+              mode: 'live-audio' as const,
+              hostToken: sessionData.hostToken,
               createdAt: new Date().toISOString(),
               expiresAt: expiryDate.toISOString()
             });
           }
           
           setCreatedSession({
-            ...response.data,
+            ...sessionData,
             type: 'flagship-audio'
           });
           setShowShareOptions(true);
@@ -219,6 +208,15 @@ const CreateSanctuary: React.FC = () => {
             title: "Flagship Audio Sanctuary created!",
             description: "Your live audio space is ready to share."
           });
+          // Navigate to the appropriate route with proper session ID
+          const sessionId = sessionData.id;
+          console.log('✅ Session created, navigating to:', sessionId);
+          
+          if (values.scheduledTime) {
+            navigate(`/flagship/${sessionId}?role=host`);
+          } else {
+            navigate(`/sanctuary/live/${sessionId}?role=host`);
+          }
         } else {
           throw new Error(response.error || "Failed to create flagship sanctuary session");
         }
